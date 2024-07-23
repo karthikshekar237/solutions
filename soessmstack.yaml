@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Trigger SNS notification on SSM Parameter Store update and send notifications to Teams channel and email
+
+Parameters:
+  TeamsWebhookUrl:
+    Type: String
+    Description: The webhook URL for the Microsoft Teams channel
+
+  EmailAddress:
+    Type: String
+    Description: The email address to send notifications to
+
+Resources:
+  SOEAMIParameter:
+    Type: 'AWS::SSM::Parameter'
+    Properties:
+      Name: 'soeamiid'
+      Type: 'String'
+      Value: 'initial-value'
+      Description: 'Parameter to store SOE AMI ID'
+
+  SNSNotificationTopic:
+    Type: 'AWS::SNS::Topic'
+    Properties:
+      TopicName: 'SSMParameterUpdateTopic'
+
+  SNSTeamsSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      Protocol: 'https'
+      Endpoint: !Ref TeamsWebhookUrl
+      TopicArn: !Ref SNSNotificationTopic
+
+  SNSEmailSubscription:
+    Type: 'AWS::SNS::Subscription'
+    Properties:
+      Protocol: 'email'
+      Endpoint: !Ref EmailAddress
+      TopicArn: !Ref SNSNotificationTopic
+
+  SNSLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'SNSPublishPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'sns:Publish'
+                Resource: '*'
+
+  SNSLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: 'index.lambda_handler'
+      Role: !GetAtt SNSLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging
+          import os
+
+          # Initialize the logger
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          sns_client = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              # Log the event
+              logger.info("Event: %s", json.dumps(event))
+              
+              try:
+                  # Extract relevant information from the event
+                  detail = event.get('detail', {})
+                  parameter_name = detail.get('requestParameters', {}).get('name', 'Unknown')
+                  parameter_value = detail.get('requestParameters', {}).get('value', 'Unknown')
+
+                  # Construct the message
+                  message = f"Parameter Store value updated:\nName: {parameter_name}\nNew Value: {parameter_value}"
+
+                  # Retrieve the SNS topic ARN from environment variable
+                  topic_arn = os.environ['SNS_TOPIC_ARN']
+                  
+                  response = sns_client.publish(
+                      TopicArn=topic_arn,
+                      Message=message,
+                      Subject='SSM Parameter Store Update Notification'
+                  )
+
+                  logger.info(f"Publish response: {response}")
+
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps('Notification sent successfully!')
+                  }
+
+              except KeyError as e:
+                  logger.error(f"KeyError: {e}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"KeyError: {e}")
+                  }
+
+              except Exception as e:
+                  logger.error(f"Unhandled exception: {e}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f"Unhandled exception: {e}")
+                  }
+      Runtime: 'python3.9'
+      Timeout: 30
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SNSNotificationTopic
+
+  EventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      EventPattern:
+        source:
+          - "aws.ssm"
+        detail-type:
+          - "AWS API Call via CloudTrail"
+        detail:
+          eventSource:
+            - "ssm.amazonaws.com"
+          eventName:
+            - "PutParameter"
+          requestParameters:
+            name:
+              - "soeamiid"
+      State: 'ENABLED'
+      Targets:
+        - Arn: !GetAtt SNSLambdaFunction.Arn
+          Id: 'SNSLambdaFunction'
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref SNSLambdaFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: 'events.amazonaws.com'
+      SourceArn: !GetAtt EventRule.Arn
+
+Outputs:
+  SNSTopicArn:
+    Description: 'SNS Topic ARN'
+    Value: !Ref SNSNotificationTopic
+  LambdaFunctionName:
+    Description: 'Lambda Function Name'
+    Value: !Ref SNSLambdaFunction
+  SSMParameterName:
+    Description: 'SSM Parameter Name'
+    Value: !Ref SOEAMIParameter
+
