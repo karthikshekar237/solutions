@@ -72,3 +72,25 @@ rm -rf /opt/*
 
 # Print success message
 echo "/opt has been successfully moved to $EBS_VOLUME_DEVICE"
+
+
+
+
+
+
+=======================
+
+
+
+#!/bin/bash
+
+# List block devices, find the last unmounted disk of type 'disk'
+NEW_DISK=$(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep 'disk' | grep -v 'MOUNTPOINT' | tail -n 1 | awk '{print "/dev/" $1}')
+
+# Check if the disk is found
+if [ -z "$NEW_DISK" ]; then
+    echo "No unmounted disk found."
+    exit 1
+fi
+
+echo "Newly attached disk: $NEW_DISK"
