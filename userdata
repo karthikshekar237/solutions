@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Variables
+MOUNT_POINT="/opt"
+
+# Install required packages
+yum update -y
+yum install -y aws-cli
+
+# Detect the root device to avoid it
+ROOT_DEVICE=$(lsblk -o NAME,MOUNTPOINT | grep '/ ' | awk '{print $1}')
+echo "Root device: $ROOT_DEVICE"
+
+# Detect the available EBS volume(s) with no filesystem
+EBS_VOLUME_DEVICE=$(lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep 'disk' | grep -v "$ROOT_DEVICE" | awk '{print "/dev/" $1}' | while read device; do
+  # Check if the volume has no filesystem (blkid should fail if there's no filesystem)
+  if ! blkid "$device" &>/dev/null; then
+    echo "$device has no filesystem. Selecting it."
+    echo "$device"
+    break  # Exit loop after finding the first unformatted device
+  fi
+done)
+
+if [ -z "$EBS_VOLUME_DEVICE" ]; then
+  echo "No unformatted EBS volume detected."
+  exit 1
+fi
+
+echo "Detected unformatted EBS volume: $EBS_VOLUME_DEVICE"
+
+# Format the unformatted EBS volume as ext4
+echo "Formatting the volume: $EBS_VOLUME_DEVICE"
+mkfs.ext4 $EBS_VOLUME_DEVICE
+
+# Create the mount point for /opt
+mkdir -p $MOUNT_POINT
+
+# Mount the unformatted EBS volume to /opt temporarily
+mount $EBS_VOLUME_DEVICE $MOUNT_POINT
+
+# Copy the data from /opt to the new EBS volume
+echo "Copying /opt data to $MOUNT_POINT"
+rsync -avx /opt/ $MOUNT_POINT/
+
+# Modify fstab to mount the EBS volume at boot
+echo "Updating /etc/fstab"
+echo "$EBS_VOLUME_DEVICE $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+
+# Ensure the volume mounts automatically after reboot
+mount -a
+
+# Remove the old /opt content (optional, based on the user's preference)
+rm -rf /opt/*
+
+# Print success message
+echo "/opt has been successfully moved to $EBS_VOLUME_DEVICE"
