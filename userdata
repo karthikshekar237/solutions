@@ -54,3 +54,19 @@ rm -rf /opt/*
 
 # Print success message
 echo "/opt has been successfully moved to $EBS_VOLUME_DEVICE"
+
+
+
+============================
+
+
+
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT | grep 'disk' | grep -v "$ROOT_DEVICE" | awk '{print "/dev/" $1}' | while read device; do
+    # Check if the volume has no filesystem (blkid should fail if there's no filesystem)
+    if ! blkid "$device" &>/dev/null; then
+        echo "$device has no filesystem. Selecting it."
+        echo "$device"
+        break  # Exit loop after finding the first unformatted device
+    fi
+done
+
