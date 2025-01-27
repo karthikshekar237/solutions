@@ -4,7 +4,6 @@
 MOUNT_POINT="/opt"
 
 # Install required packages
-#yum update -y
 yum install -y rsync
 
 # Detect the root device to avoid it
@@ -38,10 +37,6 @@ mount $NEW_DISK $MOUNT_POINT
 # Mount the unformatted EBS volume to /opt temporarily
 mount $NEW_DISK $MOUNT_POINT
 
-# Copy the data from /opt to the new EBS volume
-#echo "Copying /opt data to $MOUNT_POINT"
-#rsync -avx /opt/ $MOUNT_POINT/
-
 # Modify fstab to mount the EBS volume at boot
 echo "Updating /etc/fstab"
 echo "$NEW_DISK $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
@@ -49,6 +44,3 @@ echo "$NEW_DISK $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
 # Ensure the volume mounts automatically after reboot
 mount -a
 systemctl daemon reload
-
-# Remove the old /opt content (optional, based on the user's preference)
-#rm -rf /opt/*
