@@ -44,3 +44,110 @@ echo "$NEW_DISK $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
 # Ensure the volume mounts automatically after reboot
 mount -a
 systemctl daemon reload
+
+=====================
+
+
+name: 'Install Qualys Agent'
+description: 'This document is for installing Qualys in Ubuntu22 SOE.'
+schemaVersion: 1.0
+parameters:
+  - QUALYS_INSTALLER_PACKAGE_NAME:
+      type: string
+      default: 'QualysCloudAgent-LINUX_UBUNTU-6.3.0.67-x64.deb'
+      description: Qualys installer file
+  - QUALYS_PROXYCERT_NAME:
+      type: string
+      default: 'qgs.proxy.cer'
+      description: Qualys proxy certificate
+phases:
+  - name: build
+    steps:
+    - name: DownloadFromArtifactory
+      action: ExecuteBash
+      inputs:
+          commands:
+            - |
+              set -ex
+              DEBIAN_FRONTEND=noninteractive touch /var/log/soebuild-transcripts/QualysInstall.log
+              DEBIAN_FRONTEND=noninteractive chmod 644 /var/log/soebuild-transcripts/QualysInstall.log
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/QualysInstall.log 2>&
+              ARTIFACTORY_TOKEN=$(aws secretsmanager get-secret-value --secret-id SOE/Artifactory/ServiceAccount/Token --query SecretString --output text --region ap-southeast-2)
+              mkdir -p /root/soebuild/Qualys
+              cd /root/soebuild/Qualys
+              echo "Downloading Qualys installer file from artifactory"
+              QUALYS_INSTALLER_PACKAGE_NAME=QualysCloudAgent-LINUX_UBUNTU-6.3.0.67-x64.deb
+              curl -sSf -u acoe_artifact_pubsoe:${ARTIFACTORY_TOKEN} -O https://artifactory.internal.cba/artifactory/cloudservices-public-cloud-soe-generic/soe_apps/qualys/linux/$QUALYS_INSTALLER_PACKAGE_NAME
+    
+    - name: PrepareQualysFiles
+      action: ExecuteBash
+      inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/QualysInstall.log 2>&1
+              echo "Prepare Qualys installer"
+              cd /root/soebuild/Qualys
+              QUALYS_INSTALLER_PACKAGE_NAME=QualysCloudAgent-LINUX_UBUNTU-6.3.0.67-x64.deb
+              chmod 755 $QUALYS_INSTALLER_PACKAGE_NAME
+              dpkg -i $QUALYS_INSTALLER_PACKAGE_NAME
+              DEBIAN_FRONTEND=noninteractive apt-get install -f
+              echo 'qualys_https_proxy=http://qvm-aws:8080' >>  /etc/environment
+    - name: InstallQualys
+      action: ExecuteBash
+      inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/QualysInstall.log 2>&1
+              echo "Install Qualys"
+              /usr/local/qualys/cloud-agent/bin/qualys-cloud-agent.sh ActivationId=ee2ef87b-2969-4a2b-ba83-f5a4205931f9 CustomerId=9c0e25eb-5ddc-5af6-e040-10ac13043f6a
+              echo "Install Qualys cert"
+              systemctl start qualys-cloud-agent.service
+              systemctl enable qualys-cloud-agent.service
+              echo "Creating systemd override for Qualys Cloud Agent"
+              mkdir -p /etc/systemd/system/qualys-cloud-agent.service.d
+              echo -e "[Service]\nRestart=always" > /etc/systemd/system/qualys-cloud-agent.service.d/override.conf
+              systemctl daemon-reload
+              systemctl restart qualys-cloud-agent.service
+              echo "Creating custom systemd service to restart Qualys Cloud Agent on reboot"
+              echo -e "[Unit]\nDescription=Restart Qualys Cloud Agent Service\nAfter=network.target\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/systemctl restart qualys-cloud-agent.service\n\n[Install]\nWantedBy=multi-user.target" | sudo tee /etc/systemd/system/qualys-restart.service
+              systemctl daemon-reload
+              systemctl enable qualys-restart.service
+              echo "Qualys Cloud Agent setup complete with auto-restart on reboot"
+  - name: test
+    steps:
+      - name: VerifyQualysAgent
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/QualysInstall.log 2>&1
+
+              i=0
+              max=10
+              check_interval=30
+
+              while true
+              do
+                STATUS=$(systemctl is-active qualys-cloud-agent.service)
+                if [ "$STATUS" == "active" ]; then
+                        echo "Qualys agent is running"
+                        break
+                fi
+
+                ((i++))
+                if [ $i -ge $max ]; then
+                        echo "Qualys agent verification failed with status=${STATUS}"
+                        exit 1
+                fi
+
+                sleep $check_interval
+
+              done
+
