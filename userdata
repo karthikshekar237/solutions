@@ -151,3 +151,175 @@ phases:
 
               done
 
+
+
+======================================================
+
+
+name: InstallCISHardening
+description: Install build tools and download CIS hardening scripts to prepare for Ubuntu22 SOE build.
+schemaVersion: 1.0
+
+phases:
+  - name: build
+    steps:
+      - name: update-rsyslog-permissions
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              chmod 640 /etc/rsyslog.conf
+
+      - name: update-audit-rules
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/audit.log 2>&1
+              
+              chmod 644 /var/log/soebuild-transcripts/audit.log
+              cd /root
+              GITHUB_TOKEN=$(aws secretsmanager get-secret-value --secret-id SOE/Github/ServiceAccount/Token --query SecretString --output text --region ap-southeast-2)
+
+              # Build the pubsoe-1970
+              git clone https://acoe_github_pubsoe:${GITHUB_TOKEN}@github.source.internal.cba/CloudServices/stfs-odpengaudit
+
+              cd /etc/audit
+              mv -f auditd.conf auditd.conf.backup
+              cp /root/stfs-odpengaudit/files/linux/Ubuntu2204/auditd.conf ./
+              mv -f rules.d rules.d.backup
+              cp -rp /root/stfs-odpengaudit/files/linux/Ubuntu2204/rules.d ./
+
+              cd
+
+              chown -R root:root "/etc/audit/*"
+
+              systemctl force-reload auditd
+
+      - name: DisableIPV6
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/audit.log 2>&1
+
+              add_line_to_conf() {
+                grep -qE "^$1" $2
+                if [ $? != 0 ]; then
+
+                  # If the line does not exist in the file, make a backup of the file with an Unix time stamp
+                  cp $2 $2.`date +%s`
+
+                  # Add a new line if the file does not end with $
+                  tail -c1 $2 | read -r _ || echo >> $2
+                  echo $1 >> $2
+                fi
+              }
+
+              sed -i 's/\(^GRUB_CMDLINE_LINUX=\"\)/\1ipv6.disable=1 /' /etc/default/grub
+
+              add_line_to_conf "net.ipv6.conf.all.disable_ipv6 = 1" /etc/sysctl.conf
+              add_line_to_conf "net.ipv6.conf.default.disable_ipv6 = 1" /etc/sysctl.conf
+              add_line_to_conf "net.ipv6.conf.lo.disable_ipv6 = 1" /etc/sysctl.conf
+
+              sysctl -p
+
+              update-grub
+
+      - name: SetupUFW
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/audit.log.log 2>&1
+
+              # Disable ipv 6 in ufw
+              sed -i '/^IPV6=/s/yes/no/' /etc/default/ufw
+
+              ufw reload
+
+              ufw --force reset
+
+              # Allow SSH and DNS in
+              ufw allow 22/tcp
+              ufw allow 53
+
+              # Allow on loopback
+              ufw allow in on lo
+              ufw allow out on lo
+
+              ufw deny from 127.0.0.0/8 to any
+
+              ufw default deny incoming
+
+              # SSH
+              ufw allow out 22/tcp
+
+              # DNS and DHCP
+              ufw allow out 53
+              ufw allow out 67/udp
+
+              # HTTP and HTTPS
+              ufw allow out 80/tcp
+              ufw allow out 443/tcp
+
+              # NTP
+              ufw allow out 123/udp
+
+              # Syslog
+              ufw allow out 514/udp
+
+              # LDAP over SSL
+              ufw allow out 636/tcp
+
+              # Splunk
+              ufw allow out 8080/tcp
+              ufw allow out 8089/tcp
+
+              ufw allow out 9998/tcp
+
+              # AD login
+              ufw allow out 3128/tcp
+              ufw allow out 88
+
+              # Tanium service port
+              ufw allow out 17472/tcp
+
+              # Allow all out traffic for Beacon team to install their apps for the meanwhile
+              ufw default deny outgoing
+              #ufw default allow outgoing
+
+              ufw --force enable
+
+              ufw status verbose
+
+      - name: SysConfigFix
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/audit.log.log 2>&1
+
+              # Disable ipv6 to avoid NFS server errors
+              sed -i '/^udp6/s/^/#/' /etc/netconfig
+              sed -i '/^tcp6/s/^/#/' /etc/netconfig
+
+  - name: validate
+    steps:
+      - name: ValidateCISAndClean
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -ex
+              # Redirect all output to the log file
+              exec >> /var/log/soebuild-transcripts/audit.log.log 2>&1
+
