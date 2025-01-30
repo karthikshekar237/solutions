@@ -1,0 +1,28 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "IAM Role & Policy for AssumeRole in all AWS Organization accounts"
+
+Resources:
+  AssumeRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "AssumeRoleAcrossAccounts"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: "arn:aws:iam::834693425129:root"  # Master Account ID
+            Action: "sts:AssumeRole"
+
+  AssumeRolePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "AllowAssumeRole"
+      Roles:
+        - !Ref AssumeRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action: "sts:AssumeRole"
+            Resource: "*"
