@@ -1,0 +1,7 @@
+message = (
+                f"**SOE Update Notification**\n\n"
+                f"✅ **SOE Name:** {soe_name}\n"
+                f"📅 **Release Date:** {formatted_date}\n\n"
+                f"A new version of {soe_name} SOE has been released.\n\n"
+                f"📖 **User Guide:** [Click Here](https://google.com)"
+            )
