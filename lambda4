@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates separate SNS topics for each SSM Parameter update event and triggers a Lambda function to process notifications.
+
+Parameters:
+  AWSAccountID:
+    Type: String
+    Description: AWS Account ID where the IAM Role exists.
+    Default: 934589207066
+
+Resources:
+  # SNS Topics for different AMIs
+  SNSTopicAmazonLinux2:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: soe-amazonlinux2-latest-updates
+      DisplayName: "SOEs Parameter Store Change Notification for AmazonLinux 2"
+      Subscription:
+        - Endpoint: "karthik.shekar1@cba.com.au"
+          Protocol: "email"
+
+  SNSTopicTest:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: soe-test-latest-updates
+      DisplayName: "SOEs Parameter Store Change Notification for Testing"
+      Subscription:
+        - Endpoint: "karthik.shekar1@cba.com.au"
+          Protocol: "email"
+
+  # Lambda Function to Process SNS Notifications
+  LambdaFunc:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Sends notification to appropriate SNS topic based on SSM Parameter Store update.
+      FunctionName: soe-ssm-update-handler
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !Sub "arn:aws:iam::${AWSAccountID}:role/GHA-CICD"
+      Timeout: 240
+      Environment:
+        Variables:
+          SNS_TOPIC_AMAZONLINUX2: !Ref SNSTopicAmazonLinux2
+          SNS_TOPIC_TEST_LATEST: !Ref SNSTopicTest
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          from datetime import datetime
+
+          sns_client = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              try:
+                  ssm_parameter = event['detail']['name']
+                  release_date = event.get('time', 'UNKNOWN_DATE')  # Extract release date
+                  
+                  formatted_date = "UNKNOWN_DATE"
+                  if release_date != "UNKNOWN_DATE":
+                      formatted_date = datetime.strptime(release_date, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S UTC")
+
+                  ami_mapping = {
+                      "/cba-soe/ami-amazonlinux2-latest": ("Amazon Linux 2", os.environ.get('SNS_TOPIC_AMAZONLINUX2')),
+                      "/cba-soe/ami-test-latest": ("Test SOE", os.environ.get('SNS_TOPIC_TEST_LATEST'))
+                  }
+
+                  if ssm_parameter in ami_mapping:
+                      soe_name, topic_arn = ami_mapping[ssm_parameter]
+
+                      # Construct SNS message
+                      message = (
+                          f"**SOE Update Notification**\n\n"
+                          f"✅ **SOE Name:** {soe_name}\n"
+                          f"📅 **Release Date:** {formatted_date}\n\n"
+                          f"A new version of {soe_name} SOE has been released."
+                      )
+
+                      sns_client.publish(
+                          TopicArn=topic_arn,
+                          Subject=f"Public Cloud SOE Update - {soe_name}",
+                          Message=message
+                      )
+
+                      print(f"Notification sent for {soe_name} (Release Date: {formatted_date})")
+                  else:
+                      print(f"No SNS topic found for {ssm_parameter}")
+
+              except KeyError as e:
+                  print(f"[ERROR] Missing key in event: {e}")
+                  print(f"Event received: {event}")
+              except Exception as e:
+                  print(f"[ERROR] Unexpected error: {e}")
+
+Outputs:
+  AmazonLinux2Topic:
+    Value: !Ref SNSTopicAmazonLinux2
+    Description: "SNS Topic for Amazon Linux 2 AMI Updates"
+
+  TestTopic:
+    Value: !Ref SNSTopicTest
+    Description: "SNS Topic for Testing"
