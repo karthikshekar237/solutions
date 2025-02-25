@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates separate SNS topics for each SSM Parameter update event and triggers a Lambda function to process notifications.
+
+Parameters:
+  AWSAccountID:
+    Type: String
+    Description: AWS Account ID where the IAM Role exists.
+    Default: 934589207066
+
+Resources:
+  LambdaFunc:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Sends notification to appropriate SNS topic based on SSM Parameter Store update.
+      FunctionName: soe-ssm-update-handler
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !Sub "arn:aws:iam::${AWSAccountID}:role/GHA-CICD"
+      Timeout: 240
+      Environment:
+        Variables:
+          SNS_TOPIC_AMAZONLINUX2: !Ref SNSTopicAmazonLinux2
+          SNS_TOPIC_AMAZONLINUX2EKS128: !Ref SNSTopicAmazonLinux2EKS128
+          SNS_TOPIC_AMAZONLINUX2EKS129: !Ref SNSTopicAmazonLinux2EKS129
+          SNS_TOPIC_RHEL7: !Ref SNSTopicRHEL7
+          SNS_TOPIC_RHEL8: !Ref SNSTopicRHEL8
+          SNS_TOPIC_RHEL9: !Ref SNSTopicRHEL9
+          SNS_TOPIC_WIN2016_CORE: !Ref SNSTopicWindows2016Core
+          SNS_TOPIC_WIN2019_CORE: !Ref SNSTopicWindows2019Core
+          SNS_TOPIC_WIN2016_DESKTOP: !Ref SNSTopicWindows2016Desktop
+          SNS_TOPIC_WIN2019_DESKTOP: !Ref SNSTopicWindows2019Desktop
+          SNS_TOPIC_WIN2022_PREVIEW: !Ref SNSTopicWindows2022Preview
+          SNS_TOPIC_TEST_LATEST: !Ref SNSTopicTest
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          from datetime import datetime
+
+          sns_client = boto3.client('sns')
+
+          def lambda_handler(event, context):
+              try:
+                  ssm_parameter = event['detail']['name']
+                  release_date = event.get('time', 'UNKNOWN_DATE')
+
+                  # Format release date
+                  formatted_date = "UNKNOWN_DATE"
+                  if release_date != "UNKNOWN_DATE":
+                      formatted_date = datetime.strptime(release_date, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S UTC")
+
+                  # Map SSM parameters to SOE names
+                  ami_mapping = {
+                      "/cba-soe/ami-amazonlinux2-latest": "Amazon Linux 2",
+                      "/cba-soe/ami-amazonlinux2eks1.28-latest": "Amazon Linux 2 EKS 1.28",
+                      "/cba-soe/ami-amazonlinux2eks1.29-latest": "Amazon Linux 2 EKS 1.29",
+                      "/cba-soe/ami-rhel7-latest": "RHEL 7",
+                      "/cba-soe/ami-rhel8-latest": "RHEL 8",
+                      "/cba-soe/ami-rhel9-latest": "RHEL 9",
+                      "/cba-soe/ami-windows2016core-latest": "Windows Server 2016 Core",
+                      "/cba-soe/ami-windows2016desktop-latest": "Windows Server 2016 Desktop",
+                      "/cba-soe/ami-windows2019core-latest": "Windows Server 2019 Core",
+                      "/cba-soe/ami-windows2019desktop-latest": "Windows Server 2019 Desktop",
+                      "/cba-soe/ami-windows2022preview-latest": "Windows Server 2022 Preview",
+                      "/cba-soe/ami-test-latest": "Test Preview"
+                  }
+
+                  if ssm_parameter in ami_mapping:
+                      soe_name = ami_mapping[ssm_parameter]
+                      topic_env_var = f"SNS_TOPIC_{ssm_parameter.split('/')[-1].upper().replace('-', '_')}"
+                      topic_arn = os.environ.get(topic_env_var)
+
+                      if not topic_arn:
+                          print(f"[WARNING] No SNS Topic ARN found for {soe_name}. Skipping notification.")
+                          return
+
+                      # Construct SNS message
+                      message = (
+                          f"**SOE Update Notification**\n\n"
+                          f"✅ **SOE Name:** {soe_name}\n"
+                          f"📅 **Release Date:** {formatted_date}\n\n"
+                          f"A new version of {soe_name} SOE has been released."
+                      )
+
+                      sns_client.publish(
+                          TopicArn=topic_arn,
+                          Subject=f"Public Cloud SOE Update - {soe_name}",
+                          Message=message
+                      )
+
+                      print(f"Notification sent for {soe_name} (Release Date: {formatted_date})")
+                  else:
+                      print(f"No SNS topic found for {ssm_parameter}")
+
+              except KeyError as e:
+                  print(f"[ERROR] Missing key in event: {e}")
+                  print(f"Event received: {event}")
+              except Exception as e:
+                  print(f"[ERROR] Unexpected error: {e}")
+
