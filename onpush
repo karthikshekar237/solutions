@@ -1,0 +1,131 @@
+name: Terraform Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set environment variables based on branch (PLAN)
+        run: |
+          echo "GITHUB_REF is ${GITHUB_REF}"
+          if [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<NON_PROD_ACCOUNT_ID>:role/<NON_PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-nonprod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-nonprod" >> $GITHUB_ENV
+            echo "TFVARS=non-prod.tfvars" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<PROD_ACCOUNT_ID>:role/<PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-prod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-prod" >> $GITHUB_ENV
+            echo "TFVARS=prod.tfvars" >> $GITHUB_ENV
+          fi
+
+      - name: Configure AWS Credentials via OIDC (PLAN)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform (PLAN)
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: "1.4.0"
+
+      - name: Terraform Init (PLAN)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.BACKEND_BUCKET }}" \
+            -backend-config="key=rcp/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Workspace Select or Create (PLAN)
+        working-directory: terraform
+        run: |
+          # Use workspace "prod" for main branch and "non-prod" for develop
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            terraform workspace select prod || terraform workspace new prod
+          else
+            terraform workspace select non-prod || terraform workspace new non-prod
+          fi
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -var-file=../environments/${{ env.TFVARS }} -out=tfplan
+
+  apply:
+    needs: plan
+    runs-on: ubuntu-latest
+    # For production, use a protected GitHub Environment ("prod") that requires manual approval.
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'non-prod' }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Checkout repository (APPLY)
+        uses: actions/checkout@v3
+
+      - name: Set environment variables based on branch (APPLY)
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/develop" ]]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<NON_PROD_ACCOUNT_ID>:role/<NON_PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-nonprod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-nonprod" >> $GITHUB_ENV
+            echo "TFVARS=non-prod.tfvars" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<PROD_ACCOUNT_ID>:role/<PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-prod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-prod" >> $GITHUB_ENV
+            echo "TFVARS=prod.tfvars" >> $GITHUB_ENV
+          fi
+
+      - name: Configure AWS Credentials via OIDC (APPLY)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform (APPLY)
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: "1.4.0"
+
+      - name: Terraform Init (APPLY)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.BACKEND_BUCKET }}" \
+            -backend-config="key=rcp/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Workspace Select or Create (APPLY)
+        working-directory: terraform
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            terraform workspace select prod || terraform workspace new prod
+          else
+            terraform workspace select non-prod || terraform workspace new non-prod
+          fi
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
