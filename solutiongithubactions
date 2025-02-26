@@ -1,0 +1,136 @@
+name: Terraform Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy (non-prod or prod)'
+        required: true
+        default: non-prod
+      branch:
+        description: 'Git branch to deploy'
+        required: true
+        default: main
+      confirm_apply:
+        description: 'Apply Terraform changes? (true/false)'
+        required: true
+        default: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Set environment variables for PLAN
+        run: |
+          if [ "${{ github.event.inputs.environment }}" = "non-prod" ]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<NON_PROD_ACCOUNT_ID>:role/<NON_PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-nonprod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-nonprod" >> $GITHUB_ENV
+            echo "TFVARS=non-prod.tfvars" >> $GITHUB_ENV
+          else
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<PROD_ACCOUNT_ID>:role/<PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-prod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-prod" >> $GITHUB_ENV
+            echo "TFVARS=prod.tfvars" >> $GITHUB_ENV
+          fi
+
+      - name: Configure AWS Credentials via OIDC (PLAN)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform (PLAN)
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: "1.4.0"
+
+      - name: Terraform Init (PLAN)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.BACKEND_BUCKET }}" \
+            -backend-config="key=rcp/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Workspace Select or Create (PLAN)
+        working-directory: terraform
+        run: |
+          terraform workspace select "${{ github.event.inputs.environment }}" || terraform workspace new "${{ github.event.inputs.environment }}"
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: terraform plan -var-file=../environments/${{ env.TFVARS }} -out=tfplan
+
+  apply:
+    needs: plan
+    if: ${{ github.event.inputs.confirm_apply == 'true' }}
+    runs-on: ubuntu-latest
+    # When deploying to prod, use the 'prod' environment (which you can protect via repository settings).
+    environment: ${{ github.event.inputs.environment == 'prod' && 'prod' || 'non-prod' }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - name: Checkout repository (APPLY)
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Set environment variables for APPLY
+        run: |
+          if [ "${{ github.event.inputs.environment }}" = "non-prod" ]; then
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<NON_PROD_ACCOUNT_ID>:role/<NON_PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-nonprod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-nonprod" >> $GITHUB_ENV
+            echo "TFVARS=non-prod.tfvars" >> $GITHUB_ENV
+          else
+            echo "ROLE_TO_ASSUME=arn:aws:iam::<PROD_ACCOUNT_ID>:role/<PROD_ROLE>" >> $GITHUB_ENV
+            echo "BACKEND_BUCKET=terraformstateforrcp-prod" >> $GITHUB_ENV
+            echo "DYNAMODB_TABLE=terraformrcplocktable-prod" >> $GITHUB_ENV
+            echo "TFVARS=prod.tfvars" >> $GITHUB_ENV
+          fi
+
+      - name: Configure AWS Credentials via OIDC (APPLY)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform (APPLY)
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: "1.4.0"
+
+      - name: Terraform Init (APPLY)
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ env.BACKEND_BUCKET }}" \
+            -backend-config="key=rcp/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ env.DYNAMODB_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Workspace Select or Create (APPLY)
+        working-directory: terraform
+        run: |
+          terraform workspace select "${{ github.event.inputs.environment }}" || terraform workspace new "${{ github.event.inputs.environment }}"
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
