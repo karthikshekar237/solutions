@@ -1,0 +1,93 @@
+LambdaFunc:
+  Type: AWS::Lambda::Function
+  Properties:
+    FunctionName: soe-ssm-update-handler
+    Description: Sends SNS notifications based on SSM Parameter Store updates.
+    Handler: index.lambda_handler
+    Runtime: python3.12
+    Role: !Sub "arn:aws:iam::${AWSAccountID}:role/GHA-CICD"
+    Timeout: 240
+    Environment:
+      Variables:
+        AWS_REGION: !Ref AWS::Region
+        AWS_ACCOUNT_ID: !Ref AWS::AccountId
+        SNS_TOPIC_AMAZONLINUX2: !Ref SNSTopicAmazonLinux2
+        SNS_TOPIC_AMAZONLININUX2EKS128: !Ref SNSTopicAmazonLinux2EKS128
+        SNS_TOPIC_AMAZONLINUX2EKS129: !Ref SNSTopicAmazonLinux2EKS129
+        SNS_TOPIC_RHEL7: !Ref SNSTopicRHEL7
+        SNS_TOPIC_RHEL8: !Ref SNSTopicRHEL8
+        SNS_TOPIC_RHEL9: !Ref SNSTopicRHEL9
+        SNS_TOPIC_WIN2016_CORE: !Ref SNSTopicWindows2016Core
+        SNS_TOPIC_WIN2016_DESKTOP: !Ref SNSTopicWindows2016Desktop
+        SNS_TOPIC_WIN2019_CORE: !Ref SNSTopicWindows2019Core
+        SNS_TOPIC_WIN2019_DESKTOP: !Ref SNSTopicWindows2019Desktop
+        SNS_TOPIC_WIN2022_PREVIEW: !Ref SNSTopicWindows2022Preview
+        SNS_TOPIC_TEST_LATEST: !Ref SNSTopicTest
+    Code:
+      ZipFile: |
+        import boto3
+        import os
+        from datetime import datetime
+
+        sns_client = boto3.client('sns')
+
+        def lambda_handler(event, context):
+            try:
+                ssm_parameter = event['detail']['name']
+                release_date = event.get('time', 'UNKNOWN_DATE')
+
+                aws_region = os.environ.get("AWS_REGION")
+                aws_account_id = os.environ.get("AWS_ACCOUNT_ID")
+                ssm_parameter_arn = f"arn:aws:ssm:{aws_region}:{aws_account_id}:parameter{ssm_parameter}"
+
+                formatted_date = "UNKNOWN_DATE"
+                if release_date != "UNKNOWN_DATE":
+                    formatted_date = datetime.strptime(release_date, "%Y-%m-%dT%H:%M:%SZ").strftime("%Y-%m-%d %H:%M:%S UTC")
+
+                ami_mapping = {
+                    "/cba-soe/ami-amazonlinux2-latest": ("Amazon Linux 2", "SNS_TOPIC_AMAZONLINUX2"),
+                    "/cba-soe/ami-amazonlinux2eks1.28-latest": ("Amazon Linux 2 EKS 1.28", "SNS_TOPIC_AMAZONLINUX2EKS128"),
+                    "/cba-soe/ami-amazonlinux2eks1.29-latest": ("Amazon Linux 2 EKS 1.29", "SNS_TOPIC_AMAZONLINUX2EKS129"),
+                    "/cba-soe/ami-rhel7-latest": ("RHEL 7", "SNS_TOPIC_RHEL7"),
+                    "/cba-soe/ami-rhel8-latest": ("RHEL 8", "SNS_TOPIC_RHEL8"),
+                    "/cba-soe/ami-rhel9-latest": ("RHEL 9", "SNS_TOPIC_RHEL9"),
+                    "/cba-soe/ami-windows2016core-latest": ("Windows Server 2016 Core", "SNS_TOPIC_WIN2016_CORE"),
+                    "/cba-soe/ami-windows2016desktop-latest": ("Windows Server 2016 Desktop", "SNS_TOPIC_WIN2016_DESKTOP"),
+                    "/cba-soe/ami-windows2019core-latest": ("Windows Server 2019 Core", "SNS_TOPIC_WIN2019_CORE"),
+                    "/cba-soe/ami-windows2019desktop-latest": ("Windows Server 2019 Desktop", "SNS_TOPIC_WIN2019_DESKTOP"),
+                    "/cba-soe/ami-windows2022preview-latest": ("Windows Server 2022 Preview", "SNS_TOPIC_WIN2022_PREVIEW"),
+                    "/cba-soe/ami-test-latest": ("Test Preview", "SNS_TOPIC_TEST_LATEST")
+                }
+
+                if ssm_parameter in ami_mapping:
+                    soe_name, topic_env_var = ami_mapping[ssm_parameter]
+                    topic_arn = os.environ.get(topic_env_var)
+
+                    if not topic_arn:
+                        print(f"[WARNING] No SNS Topic ARN found for {soe_name}. Skipping notification.")
+                        return
+
+                    message = (
+                        f"SOE Update Notification\n\n"
+                        f"✅ SOE Name: {soe_name}\n"
+                        f"🔹 SSM Parameter Store ARN: `{ssm_parameter_arn}`\n"
+                        f"📅 Release Date: {formatted_date}\n\n"
+                        f"A new version of {soe_name} SOE has been released.\n\n"
+                        f"📖 User Guide: [Click Here](https://commbank.atlassian.net/wiki/spaces/SCCS/pages/391611678/Using+the+shared+AWS+CBA+Cloud+SOE)\n\n\n\n"
+                    )
+
+                    sns_client.publish(
+                        TopicArn=topic_arn,
+                        Subject=f"Public cloud SOE Update - {soe_name}",
+                        Message=message
+                    )
+
+                    print(f"Notification sent for {soe_name} (Release Date: {formatted_date})")
+                else:
+                    print(f"No SNS topic found for {ssm_parameter}")
+
+            except KeyError as e:
+                print(f"[ERROR] Missing key in event: {e}")
+                print(f"Event received: {event}")
+            except Exception as e:
+                print(f"[ERROR] Unexpected error: {e}")
