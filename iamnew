@@ -1,0 +1,91 @@
+name: Terraform Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select the deployment environment'
+        required: true
+        type: choice
+        options:
+          - test
+          - prod
+
+jobs:
+  terraform_plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    outputs:
+      tf_workspace: ${{ steps.setenv.outputs.tf_workspace }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set Environment Variables
+        id: setenv
+        run: |
+          echo "Environment selected: ${{ github.event.inputs.environment }}"
+          if [ "${{ github.event.inputs.environment }}" = "prod" ]; then
+            echo "ROLE=arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role-prod" >> $GITHUB_ENV
+            echo "TF_WORKSPACE=prod" >> $GITHUB_ENV
+            echo "::set-output name=tf_workspace::prod"
+          else
+            echo "ROLE=arn:aws:iam::<ACCOUNT_ID>:role/github-actions-role-test" >> $GITHUB_ENV
+            echo "TF_WORKSPACE=test" >> $GITHUB_ENV
+            echo "::set-output name=tf_workspace::test"
+          fi
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE }}
+          aws-region: us-east-1
+          role-session-name: GitHubActionsSession
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init -backend-config="workspace=${{ env.TF_WORKSPACE }}"
+        working-directory: terraform
+
+      - name: Select or Create Terraform Workspace
+        run: terraform workspace select ${{ env.TF_WORKSPACE }} || terraform workspace new ${{ env.TF_WORKSPACE }}
+        working-directory: terraform
+
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        working-directory: terraform
+
+  terraform_apply:
+    name: Terraform Apply (Manual Approval Required)
+    needs: terraform_plan
+    runs-on: ubuntu-latest
+    environment:
+      # This environment must be configured in your repository settings with manual approval.
+      name: ${{ steps.setenv.outputs.tf_workspace }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ env.ROLE }}
+          aws-region: us-east-1
+          role-session-name: GitHubActionsSession
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init -backend-config="workspace=${{ env.TF_WORKSPACE }}"
+        working-directory: terraform
+
+      - name: Select Terraform Workspace
+        run: terraform workspace select ${{ env.TF_WORKSPACE }}
+        working-directory: terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: terraform
